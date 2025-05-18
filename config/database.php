@@ -152,11 +152,103 @@ function initializeDatabase($pdo) {
         // Add this line at the end of the existing initializeDatabase() function, before the return true;
         // Initialize conflict management tables
         initializeConflictTables($pdo);
+        // Initialize extension management tables
+        initializeExtensionManagementTables($pdo);
         
         return true;
     } catch (PDOException $e) {
         // Log error
         error_log("Database initialization failed: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Initialize extension management tables
+ * 
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function initializeExtensionManagementTables($pdo) {
+    try {
+        // Create managed_extensions table
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS managed_extensions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                extension_id VARCHAR(255) NOT NULL UNIQUE,
+                extension_name VARCHAR(255) NOT NULL,
+                version VARCHAR(50),
+                description TEXT,
+                install_type VARCHAR(50) DEFAULT 'normal',
+                is_enabled BOOLEAN DEFAULT FALSE,
+                backend_controlled BOOLEAN DEFAULT TRUE,
+                last_enabled_attempt DATETIME NULL,
+                discovery_method VARCHAR(50) DEFAULT 'auto',
+                discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_sync TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_extension_id (extension_id),
+                INDEX idx_backend_controlled (backend_controlled),
+                INDEX idx_is_enabled (is_enabled)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+        
+        // Create extension_management_log table
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS extension_management_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                extension_id VARCHAR(255) NOT NULL,
+                action VARCHAR(100) NOT NULL,
+                old_state ENUM('enabled', 'disabled') NULL,
+                new_state ENUM('enabled', 'disabled') NULL,
+                triggered_by VARCHAR(50) DEFAULT 'system',
+                source VARCHAR(50) DEFAULT 'backend',
+                details JSON NULL,
+                user_ip VARCHAR(45),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_extension_id (extension_id),
+                INDEX idx_action (action),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+        
+        // Create extension_policies table
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS extension_policies (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                policy_name VARCHAR(100) NOT NULL UNIQUE,
+                policy_value JSON NOT NULL,
+                description TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+        
+        // Insert default extension policies
+        $stmt = $pdo->prepare("
+            INSERT INTO extension_policies (policy_name, policy_value, description) VALUES 
+            ('auto_disable_new_extensions', ?, 'Automatically disable newly installed extensions'),
+            ('block_extensions_page_access', ?, 'Block access to chrome://extensions page'),
+            ('extension_whitelist', ?, 'Allow only whitelisted extensions'),
+            ('auto_logout_on_disable', ?, 'Auto logout when extension is disabled')
+            ON DUPLICATE KEY UPDATE 
+            policy_value = VALUES(policy_value),
+            updated_at = CURRENT_TIMESTAMP
+        ");
+        
+        $policies = [
+            json_encode(['enabled' => true, 'excluded_types' => ['theme']]),
+            json_encode(['enabled' => true, 'allow_dev_mode' => true]),
+            json_encode(['enabled' => false, 'whitelisted_ids' => []]),
+            json_encode(['enabled' => true, 'clear_cookies' => true, 'clear_storage' => true])
+        ];
+        
+        $stmt->execute($policies);
+        
+        error_log("Extension management tables initialized successfully");
+        return true;
+    } catch (PDOException $e) {
+        error_log("Extension management tables initialization failed: " . $e->getMessage());
         return false;
     }
 }

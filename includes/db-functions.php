@@ -939,3 +939,425 @@ function toggleConflictingExtensionStatus($extensionId, $isActive, $pdo) {
         return false;
     }
 }
+
+/**
+ * Extension Management Functions
+ * 
+ * Functions for managing browser extensions
+ */
+
+/**
+ * Get all managed extensions
+ * 
+ * @param PDO $pdo Database connection
+ * @param bool $backendControlledOnly Get only backend controlled extensions
+ * @return array Managed extensions
+ */
+function getManagedExtensions($pdo, $backendControlledOnly = true) {
+    try {
+        $query = "SELECT * FROM managed_extensions";
+        
+        if ($backendControlledOnly) {
+            $query .= " WHERE backend_controlled = 1";
+        }
+        
+        $query .= " ORDER BY discovered_at DESC";
+        
+        $stmt = $pdo->query($query);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error getting managed extensions: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Get single managed extension by ID
+ * 
+ * @param string $extensionId Extension ID
+ * @param PDO $pdo Database connection
+ * @return array|bool Extension data or false if not found
+ */
+function getManagedExtension($extensionId, $pdo) {
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM managed_extensions WHERE extension_id = :extension_id");
+        $stmt->execute([':extension_id' => $extensionId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error getting managed extension: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Register new extension
+ * 
+ * @param array $extensionData Extension data
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function registerManagedExtension($extensionData, $pdo) {
+    try {
+        $stmt = $pdo->prepare("
+            INSERT INTO managed_extensions 
+            (extension_id, extension_name, version, description, install_type, is_enabled, discovery_method)
+            VALUES (:extension_id, :extension_name, :version, :description, :install_type, :is_enabled, :discovery_method)
+            ON DUPLICATE KEY UPDATE
+            extension_name = VALUES(extension_name),
+            version = VALUES(version),
+            description = VALUES(description),
+            install_type = VALUES(install_type),
+            is_enabled = VALUES(is_enabled),
+            last_sync = CURRENT_TIMESTAMP
+        ");
+        
+        return $stmt->execute([
+            ':extension_id' => $extensionData['extension_id'],
+            ':extension_name' => $extensionData['extension_name'],
+            ':version' => $extensionData['version'] ?? '',
+            ':description' => $extensionData['description'] ?? '',
+            ':install_type' => $extensionData['install_type'] ?? 'normal',
+            ':is_enabled' => (int)($extensionData['is_enabled'] ?? false),
+            ':discovery_method' => $extensionData['discovery_method'] ?? 'auto'
+        ]);
+    } catch (PDOException $e) {
+        error_log("Error registering managed extension: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Register multiple extensions
+ * 
+ * @param array $extensionsData Array of extension data
+ * @param PDO $pdo Database connection
+ * @return array Result with success count and errors
+ */
+function registerMultipleManagedExtensions($extensionsData, $pdo) {
+    $successCount = 0;
+    $errors = [];
+    
+    foreach ($extensionsData as $extensionData) {
+        if (registerManagedExtension($extensionData, $pdo)) {
+            $successCount++;
+        } else {
+            $errors[] = "Failed to register: " . ($extensionData['extension_name'] ?? $extensionData['extension_id']);
+        }
+    }
+    
+    return [
+        'success_count' => $successCount,
+        'total_count' => count($extensionsData),
+        'errors' => $errors
+    ];
+}
+
+/**
+ * Update extension enabled status
+ * 
+ * @param string $extensionId Extension ID
+ * @param bool $isEnabled Whether the extension should be enabled
+ * @param PDO $pdo Database connection
+ * @param string $triggeredBy Who triggered the change
+ * @return bool Success status
+ */
+function updateManagedExtensionStatus($extensionId, $isEnabled, $pdo, $triggeredBy = 'admin') {
+    try {
+        // Get current status for logging
+        $currentExtension = getManagedExtension($extensionId, $pdo);
+        $oldState = $currentExtension ? ($currentExtension['is_enabled'] ? 'enabled' : 'disabled') : null;
+        $newState = $isEnabled ? 'enabled' : 'disabled';
+        
+        // Update status
+        $stmt = $pdo->prepare("
+            UPDATE managed_extensions 
+            SET is_enabled = :is_enabled, last_sync = CURRENT_TIMESTAMP 
+            WHERE extension_id = :extension_id
+        ");
+        
+        $result = $stmt->execute([
+            ':extension_id' => $extensionId,
+            ':is_enabled' => (int)$isEnabled
+        ]);
+        
+        if ($result) {
+            // Log the action
+            logExtensionManagementAction($extensionId, 'status_change', $oldState, $newState, $triggeredBy, 'backend', null, $pdo);
+        }
+        
+        return $result;
+    } catch (PDOException $e) {
+        error_log("Error updating managed extension status: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Set backend control status for extension
+ * 
+ * @param string $extensionId Extension ID
+ * @param bool $backendControlled Whether extension should be backend controlled
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function setExtensionBackendControl($extensionId, $backendControlled, $pdo) {
+    try {
+        $stmt = $pdo->prepare("
+            UPDATE managed_extensions 
+            SET backend_controlled = :backend_controlled, last_sync = CURRENT_TIMESTAMP 
+            WHERE extension_id = :extension_id
+        ");
+        
+        return $stmt->execute([
+            ':extension_id' => $extensionId,
+            ':backend_controlled' => (int)$backendControlled
+        ]);
+    } catch (PDOException $e) {
+        error_log("Error setting extension backend control: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Delete managed extension
+ * 
+ * @param string $extensionId Extension ID
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function deleteManagedExtension($extensionId, $pdo) {
+    try {
+        $stmt = $pdo->prepare("DELETE FROM managed_extensions WHERE extension_id = :extension_id");
+        
+        $result = $stmt->execute([':extension_id' => $extensionId]);
+        
+        if ($result) {
+            // Log deletion
+            logExtensionManagementAction($extensionId, 'delete', null, null, 'admin', 'backend', null, $pdo);
+        }
+        
+        return $result;
+    } catch (PDOException $e) {
+        error_log("Error deleting managed extension: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Log extension management action
+ * 
+ * @param string $extensionId Extension ID
+ * @param string $action Action performed
+ * @param string $oldState Previous state
+ * @param string $newState New state
+ * @param string $triggeredBy Who triggered the action
+ * @param string $source Source of action (backend, extension, manual)
+ * @param array $details Additional details
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function logExtensionManagementAction($extensionId, $action, $oldState, $newState, $triggeredBy, $source, $details, $pdo) {
+    try {
+        $stmt = $pdo->prepare("
+            INSERT INTO extension_management_log 
+            (extension_id, action, old_state, new_state, triggered_by, source, details, user_ip)
+            VALUES (:extension_id, :action, :old_state, :new_state, :triggered_by, :source, :details, :user_ip)
+        ");
+        
+        return $stmt->execute([
+            ':extension_id' => $extensionId,
+            ':action' => $action,
+            ':old_state' => $oldState,
+            ':new_state' => $newState,
+            ':triggered_by' => $triggeredBy,
+            ':source' => $source,
+            ':details' => $details ? json_encode($details) : null,
+            ':user_ip' => getClientIp()
+        ]);
+    } catch (PDOException $e) {
+        error_log("Error logging extension management action: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Get extension management logs
+ * 
+ * @param PDO $pdo Database connection
+ * @param string $extensionId Optional filter by extension ID
+ * @param int $limit Number of records to return
+ * @return array Management logs
+ */
+function getExtensionManagementLogs($pdo, $extensionId = null, $limit = 100) {
+    try {
+        $query = "SELECT eml.*, me.extension_name 
+                 FROM extension_management_log eml
+                 LEFT JOIN managed_extensions me ON eml.extension_id = me.extension_id";
+        
+        $params = [];
+        
+        if ($extensionId) {
+            $query .= " WHERE eml.extension_id = :extension_id";
+            $params[':extension_id'] = $extensionId;
+        }
+        
+        $query .= " ORDER BY eml.created_at DESC LIMIT :limit";
+        
+        $stmt = $pdo->prepare($query);
+        $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
+        
+        if ($extensionId) {
+            $stmt->bindValue(':extension_id', $extensionId);
+        }
+        
+        $stmt->execute();
+        
+        $logs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Decode details JSON
+        foreach ($logs as &$log) {
+            if (!empty($log['details'])) {
+                $log['details'] = json_decode($log['details'], true);
+            }
+        }
+        
+        return $logs;
+    } catch (PDOException $e) {
+        error_log("Error getting extension management logs: " . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Get extension policy
+ * 
+ * @param string $policyName Policy name
+ * @param PDO $pdo Database connection
+ * @return array|bool Policy data or false if not found
+ */
+function getExtensionPolicy($policyName, $pdo) {
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM extension_policies WHERE policy_name = :policy_name AND is_active = 1");
+        $stmt->execute([':policy_name' => $policyName]);
+        
+        $policy = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($policy && !empty($policy['policy_value'])) {
+            $policy['policy_value'] = json_decode($policy['policy_value'], true);
+        }
+        
+        return $policy;
+    } catch (PDOException $e) {
+        error_log("Error getting extension policy: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Update extension policy
+ * 
+ * @param string $policyName Policy name
+ * @param array $policyValue Policy value
+ * @param PDO $pdo Database connection
+ * @return bool Success status
+ */
+function updateExtensionPolicy($policyName, $policyValue, $pdo) {
+    try {
+        $stmt = $pdo->prepare("
+            UPDATE extension_policies 
+            SET policy_value = :policy_value, updated_at = CURRENT_TIMESTAMP 
+            WHERE policy_name = :policy_name
+        ");
+        
+        return $stmt->execute([
+            ':policy_name' => $policyName,
+            ':policy_value' => json_encode($policyValue)
+        ]);
+    } catch (PDOException $e) {
+        error_log("Error updating extension policy: " . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Get extension management statistics
+ * 
+ * @param PDO $pdo Database connection
+ * @return array Statistics
+ */
+function getExtensionManagementStats($pdo) {
+    try {
+        // Total managed extensions
+        $stmt = $pdo->query("SELECT COUNT(*) FROM managed_extensions WHERE backend_controlled = 1");
+        $totalManaged = $stmt->fetchColumn();
+        
+        // Enabled extensions
+        $stmt = $pdo->query("SELECT COUNT(*) FROM managed_extensions WHERE backend_controlled = 1 AND is_enabled = 1");
+        $totalEnabled = $stmt->fetchColumn();
+        
+        // Disabled extensions
+        $stmt = $pdo->query("SELECT COUNT(*) FROM managed_extensions WHERE backend_controlled = 1 AND is_enabled = 0");
+        $totalDisabled = $stmt->fetchColumn();
+        
+        // Recent actions (last 24 hours)
+        $stmt = $pdo->query("SELECT COUNT(*) FROM extension_management_log WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)");
+        $recentActions = $stmt->fetchColumn();
+        
+        // Most frequently managed extensions
+        $stmt = $pdo->query("
+            SELECT me.extension_name, COUNT(eml.id) as action_count
+            FROM extension_management_log eml
+            JOIN managed_extensions me ON eml.extension_id = me.extension_id
+            WHERE eml.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            GROUP BY eml.extension_id, me.extension_name
+            ORDER BY action_count DESC
+            LIMIT 5
+        ");
+        $topManagedExtensions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        return [
+            'total_managed' => (int)$totalManaged,
+            'total_enabled' => (int)$totalEnabled,
+            'total_disabled' => (int)$totalDisabled,
+            'recent_actions_24h' => (int)$recentActions,
+            'top_managed_extensions' => $topManagedExtensions
+        ];
+    } catch (PDOException $e) {
+        error_log("Error getting extension management statistics: " . $e->getMessage());
+        return [
+            'total_managed' => 0,
+            'total_enabled' => 0,
+            'total_disabled' => 0,
+            'recent_actions_24h' => 0,
+            'top_managed_extensions' => []
+        ];
+    }
+}
+
+/**
+ * Cleanup old extension management logs
+ * 
+ * @param PDO $pdo Database connection
+ * @param int $daysToKeep Number of days to keep logs
+ * @return int Number of deleted records
+ */
+function cleanupExtensionManagementLogs($pdo, $daysToKeep = 30) {
+    try {
+        $stmt = $pdo->prepare("
+            DELETE FROM extension_management_log 
+            WHERE created_at < DATE_SUB(NOW(), INTERVAL :days_to_keep DAY)
+        ");
+        
+        $stmt->execute([':days_to_keep' => $daysToKeep]);
+        
+        $deletedCount = $stmt->rowCount();
+        if ($deletedCount > 0) {
+            error_log("Cleaned up $deletedCount old extension management logs");
+        }
+        
+        return $deletedCount;
+    } catch (PDOException $e) {
+        error_log("Error cleaning up extension management logs: " . $e->getMessage());
+        return 0;
+    }
+}

@@ -1,8 +1,8 @@
 <?php
 /**
- * Admin Sidebar
+ * Admin Sidebar with Extension Management
  * 
- * Sidebar template for admin pages
+ * Enhanced sidebar template for admin pages
  */
 ?>
 <nav id="sidebarMenu" class="col-md-3 col-lg-2 d-md-block bg-light sidebar collapse">
@@ -36,6 +36,14 @@
             <path d="M8 0a7.96 7.96 0 0 0-4.075 1.114q-.245.102-.437.28A8 8 0 1 0 8 0m3.25 14.201a1.5 1.5 0 0 0-2.13.71A7 7 0 0 1 8 15a6.97 6.97 0 0 1-3.845-1.15 1.5 1.5 0 1 0-2.005-2.005A6.97 6.97 0 0 1 1 8c0-1.953.8-3.719 2.09-4.989a1.5 1.5 0 1 0 2.469-1.574A7 7 0 0 1 8 1c1.42 0 2.742.423 3.845 1.15a1.5 1.5 0 1 0 2.005 2.005A6.97 6.97 0 0 1 15 8c0 .596-.074 1.174-.214 1.727a1.5 1.5 0 1 0-1.025 2.25 7 7 0 0 1-2.51 2.224Z"/>
           </svg>
           Cookie Rules
+        </a>
+      </li>
+      
+      <!-- NEW: Extension Management -->
+      <li class="nav-item">
+        <a class="nav-link <?php echo ($pageTitle === 'Extension Management') ? 'active' : ''; ?>" href="/semrush-backend/admin/extension-management.php">
+          <i class="bi bi-puzzle-fill me-1"></i>
+          Extension Management
         </a>
       </li>
       
